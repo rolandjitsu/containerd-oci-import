@@ -36,4 +36,6 @@ jobs:
           sudo ctr -n=example images import hello.tar
       - name: Run the Go binary
         run: |
-          sudo ./main
+          if ! sudo ./main | grep HELLO; then
+            exit 1
+          fi
