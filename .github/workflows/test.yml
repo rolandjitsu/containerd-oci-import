@@ -29,25 +29,11 @@ jobs:
       - uses: actions/checkout@v2
       - name: Export the OCI image
         run: docker buildx build --tag hello -o type=oci,dest=- . > hello.tar
-      - name: Build the binary
+      - name: Build the Go binary
         run: go build -o main ./main.go
       - name: Import the OCI image in containerd
         run: |
           sudo ctr -n=example images import hello.tar
-      # NOTE: Cannot run the binaries if there's different versions of glibc; for Debian Buster images we need at least Ubuntu 20.04.
-      # https://packages.ubuntu.com/bionic/libc6-dev-armhf-cross
-      # https://packages.debian.org/buster/libc6-dev-armhf-cross
-      # - name: Verify the binaries
-      #   run: |
-      #     unset LD_LIBRARY_PATH
-
-      #     qemu-arm -L /usr/arm-linux-gnueabihf/ ./bin/hello_server &
-      #     sleep 1
-
-      #     out=$(qemu-arm -L /usr/arm-linux-gnueabihf/ ./bin/hello_client John)
-
-      #     if ! echo "$out" | grep -q "Hello, John!" ; then
-      #       echo "Binary output is not ok"
-      #       echo "$out"
-      #       exit 1
-      #     fi
+      - name: Run the Go binary
+        run: |
+          sudo ./main
