@@ -1,5 +1,5 @@
 # BuildKit Export
-> Build and export docker images to OCU for use with containerD.
+> Build and export docker images as OCI for use with containerD.
 
 [![GitHub Workflow Status](https://img.shields.io/github/workflow/status/rolandjitsu/containerd-oci-import/Test?label=tests&style=flat-square)](https://github.com/rolandjitsu/containerd-oci-import/actions?query=workflow%3ATest)
 
