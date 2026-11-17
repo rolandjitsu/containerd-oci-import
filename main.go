@@ -2,89 +2,98 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/cio"
-	"github.com/containerd/containerd/namespaces"
-	"github.com/containerd/containerd/oci"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/cio"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/containerd/v2/pkg/oci"
 )
 
 func main() {
-	if err := helloExample(); err != nil {
+	address := flag.String("address", "/run/containerd/containerd.sock", "Path to containerd socket")
+	namespace := flag.String("namespace", "example", "Containerd namespace to use")
+	imageRef := flag.String("image", "docker.io/library/hello:latest", "Image reference to run")
+	containerID := flag.String("container-id", "hello", "Container ID")
+	snapshotID := flag.String("snapshot-id", "hello-snapshot", "Snapshot ID")
+	timeout := flag.Duration("timeout", 10*time.Second, "Maximum execution timeout")
+	flag.Parse()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if *timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+		defer cancel()
+	}
+
+	if err := run(ctx, *address, *namespace, *imageRef, *containerID, *snapshotID); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func helloExample() error {
-	// create a new client connected to the default socket path for containerd
-	client, err := containerd.New("/run/containerd/containerd.sock")
+func run(ctx context.Context, address, namespace, imageRef, containerID, snapshotID string) error {
+	client, err := containerd.New(address)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to connect to containerd at %q: %w", address, err)
 	}
 	defer client.Close()
 
-	// create a new context with an "example" namespace
-	ctx := namespaces.WithNamespace(context.Background(), "example")
+	ctx = namespaces.WithNamespace(ctx, namespace)
 
-	// get the hello image (because we already imported it)
-	// we could also use https://pkg.go.dev/github.com/containerd/containerd#Client.Import to import the image programmatically
-	image, err := client.GetImage(ctx, "docker.io/library/hello:latest")
-
+	image, err := client.GetImage(ctx, imageRef)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get image %q: %w", imageRef, err)
 	}
 
-	// create a container
 	container, err := client.NewContainer(
 		ctx,
-		"hello",
+		containerID,
 		containerd.WithImage(image),
-		containerd.WithNewSnapshot("hello-snapshot", image),
+		containerd.WithNewSnapshot(snapshotID, image),
 		containerd.WithNewSpec(oci.WithImageConfig(image)),
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create container %q: %w", containerID, err)
 	}
 	defer container.Delete(ctx, containerd.WithSnapshotCleanup)
 
-	// create a task from the container
 	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStdio))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create task: %w", err)
 	}
 	defer task.Delete(ctx)
 
-	// make sure we wait before calling start
 	exitStatusC, err := task.Wait(ctx)
 	if err != nil {
-		fmt.Println(err)
+		return fmt.Errorf("failed to wait on task: %w", err)
 	}
 
-	// call start on the task to execute the hello server
 	if err := task.Start(ctx); err != nil {
-		return err
+		return fmt.Errorf("failed to start task: %w", err)
 	}
 
-	// sleep for a lil bit to see the logs
-	time.Sleep(3 * time.Second)
-
-	// kill the process and get the exit status
-	if err := task.Kill(ctx, syscall.SIGTERM); err != nil {
-		return err
+	select {
+	case status := <-exitStatusC:
+		code, _, err := status.Result()
+		if err != nil {
+			return fmt.Errorf("task exit result error: %w", err)
+		}
+		fmt.Printf("hello exited with status: %d\n", code)
+		if code != 0 {
+			return fmt.Errorf("task exited with non-zero status: %d", code)
+		}
+	case <-ctx.Done():
+		_ = task.Kill(context.Background(), syscall.SIGKILL)
+		return ctx.Err()
 	}
-
-	// wait for the process to fully exit and print out the exit status
-
-	status := <-exitStatusC
-	code, _, err := status.Result()
-	if err != nil {
-		return err
-	}
-	fmt.Printf("hello exited with status: %d\n", code)
 
 	return nil
 }

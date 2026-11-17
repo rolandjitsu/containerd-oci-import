@@ -3,37 +3,71 @@ on:
   push:
     branches:
       - master
+      - main
   pull_request:
     types: [opened, synchronize]
 
 jobs:
-  test:
-    runs-on: ubuntu-20.04
+  lint:
+    runs-on: ubuntu-24.04
     steps:
-      - name: Enable experimental features for the Docker CLI
-        run: |
-          mkdir -p ~/.docker
-          echo $'{\n  "experimental": "enabled"\n}' | sudo tee ~/.docker/config.json
-          sudo service docker restart
-          docker version -f '{{.Client.Experimental}}'
-          docker buildx version
-      - name: Setup a Docker builder
-        run: |
-          docker buildx create --name ci --use
-          docker buildx inspect --bootstrap
-      - name: Set up containerd
-        uses: crazy-max/ghaction-setup-containerd@v1
-      - uses: actions/setup-go@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check spelling with typos
+        uses: crate-ci/typos@v1
+
+      - name: Check Markdown and JSON formatting
+        uses: dprint/check@v2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: '^1.15.2'
-      - uses: actions/checkout@v2
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Verify Go format and vet
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+
+  test:
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        containerd-version:
+          - 'v1.7.25'
+          - 'latest'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up containerd (${{ matrix.containerd-version }})
+        uses: crazy-max/ghaction-setup-containerd@v3
+        with:
+          containerd-version: ${{ matrix.containerd-version }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
       - name: Export the OCI image
-        run: docker buildx build --tag hello -o type=oci,dest=- . > hello.tar
+        run: docker buildx bake
+
       - name: Build the Go binary
         run: go build -o main ./main.go
+
       - name: Import the OCI image in containerd
         run: |
           sudo ctr -n=example images import hello.tar
+
       - name: Run the Go binary
         run: |
           if ! sudo ./main | grep HELLO; then
